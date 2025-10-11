@@ -1,0 +1,2120 @@
+-- ================================================================
+-- SISTEMA DE EMOTES COM BLOQUEIO TOTAL AO MORRER
+-- SEM AUTO-REATIVAÇÃO NO RESPAWN
+-- ================================================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local animate = character:WaitForChild("Animate")
+
+-- ================================================================
+-- VARIÁVEIS DE CONTROLE
+-- ================================================================
+local EmoteIDs = {
+        idle = "112337030269214",     -- Floating quando parado
+    walk = "12518152696",          -- Divino quando andando
+    run = "12518152696",           -- Divino quando correndo
+    jump = "507765000"       -- Fly Jump quando pulando
+}
+
+local Settings = {
+    ["Fade In"] = 0.2,
+    ["Fade Out"] = 0.2,
+    ["Weight"] = 1,
+    ["Speed"] = 1,
+    ["Time Position"] = 0
+}
+
+local OriginalAnimations = {}
+local CurrentTracks = {}
+local lastState = "idle"
+local stateTime = 0
+local isSystemActive = false
+local updateConnection = nil
+local blockConnection = nil
+local isDead = false
+local wasActiveBefore = false -- NOVA: Controla se deve reativar
+
+-- ================================================================
+-- BACKUP DAS ANIMAÇÕES ORIGINAIS
+-- ================================================================
+local function backupOriginalAnimations()
+    print("💾 Salvando animações originais...")
+    
+    OriginalAnimations = {
+        idle = {},
+        walk = {},
+        run = {},
+        jump = {},
+        fall = {},
+        climb = {},
+        sit = {}
+    }
+    
+    if animate:FindFirstChild("idle") then
+        for _, anim in pairs(animate.idle:GetChildren()) do
+            if anim:IsA("Animation") then
+                table.insert(OriginalAnimations.idle, anim.AnimationId)
+            end
+        end
+    end
+    
+    if animate:FindFirstChild("walk") and animate.walk:FindFirstChild("WalkAnim") then
+        OriginalAnimations.walk = animate.walk.WalkAnim.AnimationId
+    end
+    
+    if animate:FindFirstChild("run") and animate.run:FindFirstChild("RunAnim") then
+        OriginalAnimations.run = animate.run.RunAnim.AnimationId
+    end
+    
+    if animate:FindFirstChild("jump") and animate.jump:FindFirstChild("JumpAnim") then
+        OriginalAnimations.jump = animate.jump.JumpAnim.AnimationId
+    end
+    
+    if animate:FindFirstChild("fall") and animate.fall:FindFirstChild("FallAnim") then
+        OriginalAnimations.fall = animate.fall.FallAnim.AnimationId
+    end
+    
+    if animate:FindFirstChild("climb") and animate.climb:FindFirstChild("ClimbAnim") then
+        OriginalAnimations.climb = animate.climb.ClimbAnim.AnimationId
+    end
+    
+    print("✅ Backup concluído!")
+end
+
+backupOriginalAnimations()
+
+-- ================================================================
+-- BLOQUEADOR PERMANENTE DE ANIMAÇÕES
+-- ================================================================
+local function startAnimationBlocker()
+    if blockConnection then
+        blockConnection:Disconnect()
+        blockConnection = nil
+    end
+    
+    print("🔒 BLOQUEADOR ATIVADO - Matando animações em loop...")
+    
+    blockConnection = RunService.Heartbeat:Connect(function()
+        if isDead and humanoid then
+            -- Para QUALQUER animação que tentar rodar
+            for _, track in pairs(humanoid:GetPlayingAnimationTracks()) do
+                if track.IsPlaying then
+                    track:Stop(0)
+                end
+            end
+            
+            -- Para tracks customizados
+            for _, track in pairs(CurrentTracks) do
+                if track and track.IsPlaying then
+                    track:Stop(0)
+                end
+            end
+            
+            -- Garante que Animate fica desabilitado
+            if animate and not animate.Disabled then
+                animate.Disabled = true
+            end
+        end
+    end)
+end
+
+-- ================================================================
+-- FUNÇÃO DE PARADA TOTAL AO MORRER
+-- ================================================================
+local function stopOnDeath()
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("💀 PERSONAGEM MORREU!")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    
+    -- Salva se estava ativo antes de morrer
+    wasActiveBefore = isSystemActive
+    
+    isDead = true
+    isSystemActive = false
+    
+    -- Para o loop de atualização
+    if updateConnection then
+        updateConnection:Disconnect()
+        updateConnection = nil
+        print("🔴 Loop de atualização DESCONECTADO")
+    end
+    
+    -- Para TODAS as animações
+    for _, track in pairs(CurrentTracks) do
+        pcall(function()
+            if track then
+                track:Stop(0)
+                track:Destroy()
+            end
+        end)
+    end
+    CurrentTracks = {}
+    
+    for _, track in pairs(humanoid:GetPlayingAnimationTracks()) do
+        pcall(function()
+            track:Stop(0)
+        end)
+    end
+    
+    -- Desabilita Animate Script
+    if animate then
+        animate.Disabled = true
+        print("🔴 Animate Script DESABILITADO")
+    end
+    
+    -- Inicia bloqueador em loop
+    startAnimationBlocker()
+    
+    print("🔒 BLOQUEIO TOTAL ATIVO!")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+end
+
+-- ================================================================
+-- RESTAURAR ANIMAÇÕES ORIGINAIS
+-- ================================================================
+local function restoreOriginalAnimations()
+    print("🔄 Restaurando animações originais...")
+    
+    -- Para tudo primeiro
+    for _, track in pairs(CurrentTracks) do
+        pcall(function()
+            if track then
+                track:Stop(0)
+                track:Destroy()
+            end
+        end)
+    end
+    CurrentTracks = {}
+    
+    for _, track in pairs(humanoid:GetPlayingAnimationTracks()) do
+        pcall(function()
+            track:Stop(0)
+        end)
+    end
+    
+    wait(0.3)
+    
+    -- Restaura IDs originais
+    if animate:FindFirstChild("idle") then
+        local index = 1
+        for _, anim in pairs(animate.idle:GetChildren()) do
+            if anim:IsA("Animation") and OriginalAnimations.idle[index] then
+                anim.AnimationId = OriginalAnimations.idle[index]
+                index = index + 1
+            end
+        end
+    end
+    
+    if animate:FindFirstChild("walk") and animate.walk:FindFirstChild("WalkAnim") then
+        animate.walk.WalkAnim.AnimationId = OriginalAnimations.walk
+    end
+    
+    if animate:FindFirstChild("run") and animate.run:FindFirstChild("RunAnim") then
+        animate.run.RunAnim.AnimationId = OriginalAnimations.run
+    end
+    
+    if animate:FindFirstChild("jump") and animate.jump:FindFirstChild("JumpAnim") then
+        animate.jump.JumpAnim.AnimationId = OriginalAnimations.jump
+    end
+    
+    if animate:FindFirstChild("fall") and animate.fall:FindFirstChild("FallAnim") then
+        animate.fall.FallAnim.AnimationId = OriginalAnimations.fall
+    end
+    
+    if animate:FindFirstChild("climb") and animate.climb:FindFirstChild("ClimbAnim") then
+        animate.climb.ClimbAnim.AnimationId = OriginalAnimations.climb
+    end
+    
+    animate.Disabled = true
+    wait(0.1)
+    animate.Disabled = false
+    
+    print("✅ Animações originais restauradas!")
+end
+
+-- ================================================================
+-- PARADA COMPLETA DO SISTEMA
+-- ================================================================
+local function stopSystemCompletely()
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("🛑 PARANDO SISTEMA COMPLETAMENTE...")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    
+    isSystemActive = false
+    isDead = false
+    wasActiveBefore = false -- NÃO vai reativar no respawn
+    
+    if updateConnection then
+        updateConnection:Disconnect()
+        updateConnection = nil
+        print("🔴 Loop desconectado")
+    end
+    
+    if blockConnection then
+        blockConnection:Disconnect()
+        blockConnection = nil
+        print("🔓 Bloqueador desconectado")
+    end
+    
+    restoreOriginalAnimations()
+    
+    lastState = "idle"
+    stateTime = 0
+    
+    print("✅ Sistema TOTALMENTE parado!")
+    print("🎮 Animações normais do Roblox ativas")
+    print("💡 Use /start para reativar")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+end
+
+-- ================================================================
+-- LOADTRACK
+-- ================================================================
+local function LoadEmoteTrack(id, trackName)
+    if not humanoid or humanoid.Health <= 0 or not isSystemActive or isDead then 
+        return 
+    end
+    
+    if CurrentTracks[trackName] then 
+        CurrentTracks[trackName]:Stop(Settings["Fade Out"]) 
+        CurrentTracks[trackName] = nil
+    end
+    
+    local animId
+    local ok, result = pcall(function() 
+        return game:GetObjects("rbxassetid://" .. tostring(id)) 
+    end)
+    
+    if ok and result and #result > 0 then
+        local anim = result[1]
+        if anim:IsA("Animation") then
+            animId = anim.AnimationId
+        else
+            animId = "rbxassetid://" .. tostring(id)
+        end
+    else
+        animId = "rbxassetid://" .. tostring(id)
+    end
+    
+    local newAnim = Instance.new("Animation")
+    newAnim.AnimationId = animId
+    newAnim.Name = "EmoteMovement_" .. trackName
+    
+    local newTrack = humanoid:LoadAnimation(newAnim)
+    newTrack.Priority = Enum.AnimationPriority.Action4
+    
+    local weight = Settings["Weight"]
+    if weight == 0 then weight = 0.001 end
+    
+    newTrack:Play(Settings["Fade In"], weight, Settings["Speed"])
+    newTrack.TimePosition = math.clamp(Settings["Time Position"], 0, 1) * newTrack.Length
+    newTrack.Looped = (trackName ~= "jump")
+    
+    CurrentTracks[trackName] = newTrack
+    
+    return newTrack
+end
+
+-- ================================================================
+-- DETECÇÃO DE ESTADO
+-- ================================================================
+local function detectMovementState()
+    if not humanoid or humanoid.Health <= 0 or isDead then return "idle" end
+    
+    local moveDirection = humanoid.MoveDirection
+    local walkSpeed = humanoid.WalkSpeed
+    local jumpState = humanoid:GetState()
+    
+    if jumpState == Enum.HumanoidStateType.Jumping or 
+       jumpState == Enum.HumanoidStateType.Freefall then
+        return "jump"
+    elseif moveDirection.Magnitude > 0.1 then
+        if walkSpeed >= 20 then
+            return "run"
+        else
+            return "walk"
+        end
+    else
+        return "idle"
+    end
+end
+
+-- ================================================================
+-- ATUALIZAÇÃO DE MOVIMENTO
+-- ================================================================
+local function updateEmoteMovement()
+    if not isSystemActive or not humanoid or humanoid.Health <= 0 or isDead then 
+        return 
+    end
+    
+    local currentTime = tick()
+    local newState = detectMovementState()
+    
+    if newState ~= lastState and (currentTime - stateTime) > 0.3 then
+        
+        if CurrentTracks[lastState] and CurrentTracks[lastState].IsPlaying then
+            CurrentTracks[lastState]:Stop(Settings["Fade Out"])
+        end
+        
+        if EmoteIDs[newState] then
+            LoadEmoteTrack(EmoteIDs[newState], newState)
+        end
+        
+        lastState = newState
+        stateTime = currentTime
+    end
+end
+
+-- ================================================================
+-- EVENTOS DE MORTE
+-- ================================================================
+local function connectDeathEvents(hum)
+    if not hum then return end
+    
+    hum.Died:Connect(function()
+        stopOnDeath()
+    end)
+    
+    hum.StateChanged:Connect(function(oldState, newState)
+        if newState == Enum.HumanoidStateType.Dead then
+            stopOnDeath()
+        end
+    end)
+    
+    hum.HealthChanged:Connect(function(health)
+        if health <= 0 and not isDead then
+            stopOnDeath()
+        end
+    end)
+end
+
+connectDeathEvents(humanoid)
+
+-- ================================================================
+-- SUBSTITUIR ANIMATE SCRIPT
+-- ================================================================
+local function replaceAnimateScript()
+    print("🔄 Substituindo Animate Script...")
+    
+    if not character or not humanoid or humanoid.Health <= 0 or isDead then 
+        return false 
+    end
+    
+    local success = false
+    
+    pcall(function()
+        if animate then
+            animate.Disabled = true
+            
+            for _, track in pairs(humanoid:GetPlayingAnimationTracks()) do
+                track:Stop(0.3)
+            end
+            
+            wait(0.5)
+            
+            if animate:FindFirstChild("idle") and animate.idle:FindFirstChild("Animation1") then
+                animate.idle.Animation1.AnimationId = "rbxassetid://" .. EmoteIDs.idle
+            end
+            if animate:FindFirstChild("walk") and animate.walk:FindFirstChild("WalkAnim") then
+                animate.walk.WalkAnim.AnimationId = "rbxassetid://" .. EmoteIDs.walk
+            end
+            if animate:FindFirstChild("run") and animate.run:FindFirstChild("RunAnim") then
+                animate.run.RunAnim.AnimationId = "rbxassetid://" .. EmoteIDs.run
+            end
+            if animate:FindFirstChild("jump") and animate.jump:FindFirstChild("JumpAnim") then
+                animate.jump.JumpAnim.AnimationId = "rbxassetid://" .. EmoteIDs.jump
+            end
+            
+            animate.Disabled = false
+            success = true
+            print("✅ Animate Script substituído!")
+        end
+    end)
+    
+    return success
+end
+
+-- ================================================================
+-- SISTEMA CUSTOMIZADO
+-- ================================================================
+local function startCustomTrackSystem()
+    print("🔄 Iniciando sistema customizado...")
+    
+    if not humanoid or humanoid.Health <= 0 or isDead then 
+        return false 
+    end
+    
+    for _, track in pairs(humanoid:GetPlayingAnimationTracks()) do
+        track:Stop(0.3)
+    end
+    
+    wait(0.5)
+    
+    LoadEmoteTrack(EmoteIDs.idle, "idle")
+    isSystemActive = true
+    
+    print("✅ Sistema ativo!")
+    return true
+end
+
+-- ================================================================
+-- ATIVAÇÃO DO SISTEMA
+-- ================================================================
+local function activateEmoteMovementSystem()
+    if not humanoid or humanoid.Health <= 0 or isDead then
+        print("❌ Não é possível ativar - personagem morto")
+        return false
+    end
+    
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("🎭 ATIVANDO SISTEMA DE EMOTES")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    
+    local methods = {
+        {name = "Animate Script", func = replaceAnimateScript},
+        {name = "Sistema Custom", func = startCustomTrackSystem}
+    }
+    
+    local success = false
+    
+    for i, method in ipairs(methods) do
+        print("🎯 Método " .. i .. ": " .. method.name)
+        
+        if method.func() then
+            success = true
+            print("✅ " .. method.name .. " funcionou!")
+            break
+        end
+        
+        wait(0.5)
+    end
+    
+    if success then
+        if updateConnection then
+            updateConnection:Disconnect()
+        end
+        
+        updateConnection = RunService.Heartbeat:Connect(function()
+            if humanoid and humanoid.Health > 0 and isSystemActive and not isDead then
+                updateEmoteMovement()
+            end
+        end)
+        
+        wasActiveBefore = true -- Marca que foi ativado manualmente
+        
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("🎉 SISTEMA ATIVADO!")
+        print("💀 Bloqueio total ao morrer")
+        print("🔄 Reaplica automaticamente ao respawn")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        return true
+    else
+        print("❌ Falha na ativação")
+        return false
+    end
+end
+
+-- ================================================================
+-- COMANDOS
+-- ================================================================
+player.Chatted:Connect(function(message)
+    local msg = message:lower()
+    
+    if msg == "/start" or msg == "/ativar" then
+        if humanoid and humanoid.Health > 0 and not isDead then
+            activateEmoteMovementSystem()
+        else
+            print("❌ Personagem morto - aguarde respawn e use /start novamente")
+        end
+        
+    elseif msg == "/stop" or msg == "/parar" then
+        stopSystemCompletely()
+        
+    elseif msg == "/status" then
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("📊 STATUS DO SISTEMA")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("🔹 Sistema: " .. (isSystemActive and "✅ ATIVO" or "❌ INATIVO"))
+        print("🔹 Morto: " .. (isDead and "💀 SIM" or "💚 NÃO"))
+        print("🔹 Bloqueador: " .. (blockConnection and "🔒 ATIVO" or "🔓 INATIVO"))
+        print("🔹 Vai reativar no respawn: " .. (wasActiveBefore and "✅ SIM" or "❌ NÃO"))
+        if humanoid then
+            print("🔹 Saúde: " .. math.floor(humanoid.Health) .. "/" .. humanoid.MaxHealth)
+        end
+        local trackCount = 0
+        for _ in pairs(CurrentTracks) do trackCount = trackCount + 1 end
+        print("🔹 Tracks: " .. trackCount)
+        print("🔹 Loop ativo: " .. (updateConnection and "✅ SIM" or "❌ NÃO"))
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        
+    elseif msg:match("^/setid%s+(%w+)%s+(%d+)") then
+        local state, newId = msg:match("^/setid%s+(%w+)%s+(%d+)")
+        if EmoteIDs[state] then
+            EmoteIDs[state] = newId
+            print("✅ ID alterado: " .. state .. " = " .. newId)
+        else
+            print("❌ Estado inválido")
+        end
+        
+    elseif msg == "/help" or msg == "/ajuda" then
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("🎮 COMANDOS")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("🔹 /start - Ativar sistema")
+        print("🔹 /stop - Parar TUDO (não reativa)")
+        print("🔹 /status - Ver status completo")
+        print("🔹 /setid [estado] [id] - Mudar emote")
+        print("🔹 /help - Ajuda")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("💀 Ao morrer: BLOQUEIA tudo")
+        print("🔄 Ao respawnar: Volta SE estava ativo")
+        print("🛑 Use /stop para desativar permanente")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    end
+end)
+
+-- ================================================================
+-- RESPAWN - SEM AUTO-ATIVAÇÃO FORÇADA
+-- ================================================================
+player.CharacterAdded:Connect(function(newCharacter)
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("🔄 RESPAWN DETECTADO")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    
+    character = newCharacter
+    humanoid = newCharacter:WaitForChild("Humanoid")
+    animate = newCharacter:WaitForChild("Animate")
+    
+    -- LIMPA TUDO
+    isDead = false
+    CurrentTracks = {}
+    lastState = "idle"
+    stateTime = 0
+    
+    -- Para e remove o bloqueador
+    if blockConnection then
+        blockConnection:Disconnect()
+        blockConnection = nil
+        print("🔓 Bloqueador removido")
+    end
+    
+    if updateConnection then
+        updateConnection:Disconnect()
+        updateConnection = nil
+        print("🔴 Loop anterior desconectado")
+    end
+    
+    -- Faz novo backup
+    backupOriginalAnimations()
+    
+    -- Reconecta eventos de morte
+    connectDeathEvents(humanoid)
+    
+    wait(3)
+    
+    -- SÓ reativa se estava ativo antes de morrer
+    if wasActiveBefore then
+        print("🔄 Sistema estava ativo - reaplicando...")
+        activateEmoteMovementSystem()
+    else
+        print("⏸️  Sistema não estava ativo - mantendo parado")
+        print("💡 Use /start para ativar")
+    end
+    
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+end)
+
+-- ================================================================
+-- INICIALIZAÇÃO - AUTO-START NO PRIMEIRO SPAWN
+-- ================================================================
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+print("✅ SISTEMA CARREGADO")
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+print("🌊 Floating (parado)")
+print("⚡ Divino (andando/correndo)")
+print("🚀 Fly Jump (pulando)")
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+print("💀 BLOQUEIO TOTAL ao morrer")
+print("🔒 Loop mata QUALQUER animação")
+print("🔄 Volta AO RESPAWN se estava ativo")
+print("🛑 /stop = NÃO reativa no respawn")
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+print("🎮 Digite /help para comandos")
+print("⏳ Iniciando em 2 segundos...")
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+wait(2)
+activateEmoteMovementSystem()
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+
+-- IDs dos acessórios do Goner
+local gonerIDs = {
+    17770317484, -- Cabeça do Golpista
+    17812417356, -- Goner
+    17812415139, -- Goner
+    17772174303, -- Goners Body Spikes
+    17822722698, -- Goners Right Arm Spikes
+    17822749561, -- Goners Left Arm Spikes
+    17771175724, -- Goners Blade
+    81713181781035, -- Capa
+}
+
+-- ID da animação específica
+local animationID = 5319922112
+
+-- Função para equipar item
+local function equipItem(id)
+    pcall(function()
+        local args = {[1] = id}
+        game:GetService("ReplicatedStorage").Remotes.Wear:InvokeServer(unpack(args))
+    end)
+end
+
+-- Função para remover todos os acessórios
+local function removeAllAccessories()
+    print("🗑️ Removendo todos os acessórios antigos...")
+    
+    -- Tenta diferentes remotes possíveis para remover
+    local removeCommands = {
+        "RemoveAccessory",
+        "UnequipAll", 
+        "ClearAccessories",
+        "RemoveAll",
+        "ResetAvatar"
+    }
+    
+    for _, commandName in pairs(removeCommands) do
+        pcall(function()
+            if game:GetService("ReplicatedStorage").Remotes:FindFirstChild(commandName) then
+                print("🔄 Tentando: " .. commandName)
+                game:GetService("ReplicatedStorage").Remotes[commandName]:FireServer()
+            end
+        end)
+    end
+    
+    -- Método alternativo: tentar remover pelo character
+    pcall(function()
+        local character = LocalPlayer.Character
+        if character then
+            for _, child in pairs(character:GetChildren()) do
+                if child:IsA("Accessory") then
+                    print("🗑️ Removendo: " .. child.Name)
+                    child:Destroy()
+                end
+            end
+        end
+    end)
+    
+    print("✅ Limpeza concluída!")
+    wait(1)
+end
+
+-- Remover acessórios antigos primeiro
+removeAllAccessories()
+
+-- Equipar todos os acessórios do Goner
+print("🔥 EQUIPANDO VISUAL GONER 🔥")
+
+for i, itemID in pairs(gonerIDs) do
+    print("Equipando acessório " .. i .. "/7: " .. itemID)
+    equipItem(itemID)
+    wait(1)
+end
+
+print("✅ Todos os acessórios Goner equipados!")
+
+-- Mudar cor do corpo para preto
+print("🖤 Executando comando de cor...")
+local args = {
+    [1] = "Really black"
+}
+game:GetService("ReplicatedStorage").Remotes.ChangeBodyColor:FireServer(unpack(args))
+print("✅ Comando de cor executado!")
+
+wait(1)
+
+-- Alterar corpo (novo remote)
+print("💀 Alterando corpo do personagem...")
+local args = {
+    [1] = {
+        [1] = 0,
+        [2] = 0,
+        [3] = 0,
+        [4] = 0,
+        [5] = 0,
+        [6] = 0
+    }
+}
+game:GetService("ReplicatedStorage").Remotes.ChangeCharacterBody:InvokeServer(unpack(args))
+print("✅ Corpo alterado com sucesso!")
+
+wait(1)
+
+-- Equipar animação
+print("🎭 Executando comando de animação...")
+local args = {
+    [1] = animationID
+}
+game:GetService("ReplicatedStorage").Remotes.Wear:InvokeServer(unpack(args))
+print("✅ Comando de animação executado!")
+
+wait(1)
+
+-- Aplicar somente o emmiter (Smoke Black)
+print("✨ Aplicando emmiter na skin (Smoke Black)...")
+local args = {
+    [1] = "18637072603",
+    [2] = "035FireBlack"
+}
+game:GetService("ReplicatedStorage").Remotes.ApplyEmmiter:InvokeServer(unpack(args))
+print("✅ Emmiter Smoke Black aplicado!")
+
+wait(1)
+
+print("🎉 VISUAL GONER COMPLETO EQUIPADO!")
+print("- 7 acessórios Goner ✅")
+print("- Cor preta ✅") 
+print("- Corpo alterado ✅")
+print("- Animação " .. animationID .. " ✅")
+print("- Emmiter Smoke Black aplicado ✅")
+
+-- Serviços
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local lastPosition = character.PrimaryPart and character.PrimaryPart.Position or Vector3.new()
+
+player.CharacterAdded:Connect(function(newCharacter)
+    character = newCharacter
+    humanoid = newCharacter:WaitForChild("Humanoid")
+    lastPosition = character.PrimaryPart and character.PrimaryPart.Position or Vector3.new()
+end)
+
+-- ======================
+-- Configurações Emote
+-- ======================
+local Settings = {}
+Settings["Stop On Move"] = true
+Settings["Fade In"] = 0.1
+Settings["Fade Out"] = 0.1
+Settings["Weight"] = 1
+Settings["Speed"] = 1
+Settings["Time Position"] = 0
+
+local CurrentTrack = nil
+local DEMOMAN_LAUGH_ID = "122240620529815" -- ID atualizado do emote
+
+local function LoadTrack(id)
+    if CurrentTrack then 
+        CurrentTrack:Stop(Settings["Fade Out"]) 
+    end
+    
+    local animId
+    local ok, result = pcall(function() 
+        return game:GetObjects("rbxassetid://" .. tostring(id)) 
+    end)
+    
+    if ok and result and #result > 0 then
+        local anim = result[1]
+        if anim:IsA("Animation") then
+            animId = anim.AnimationId
+        else
+            animId = "rbxassetid://" .. tostring(id)
+        end
+    else
+        animId = "rbxassetid://" .. tostring(id)
+    end
+    
+    local newAnim = Instance.new("Animation")
+    newAnim.AnimationId = animId
+    local newTrack = humanoid:LoadAnimation(newAnim)
+    newTrack.Priority = Enum.AnimationPriority.Action4
+    
+    local weight = Settings["Weight"]
+    if weight == 0 then weight = 0.001 end
+    
+    newTrack:Play(Settings["Fade In"], weight, Settings["Speed"])
+    CurrentTrack = newTrack
+    CurrentTrack.TimePosition = math.clamp(Settings["Time Position"], 0, 1) * CurrentTrack.Length
+    CurrentTrack.Priority = Enum.AnimationPriority.Action4
+    
+    return newTrack
+end
+
+RunService.RenderStepped:Connect(function()
+    if character.PrimaryPart then
+        if Settings["Stop On Move"] and CurrentTrack and CurrentTrack.IsPlaying then
+            local moved = (character.PrimaryPart.Position - lastPosition).Magnitude > 0.1
+            local jumped = humanoid and humanoid:GetState() == Enum.HumanoidStateType.Jumping
+            if moved or jumped then
+                CurrentTrack:Stop(Settings["Fade Out"])
+                CurrentTrack = nil
+            end
+        end
+        lastPosition = character.PrimaryPart.Position
+    end
+end)
+
+local function playDemomanLaugh()
+    LoadTrack(DEMOMAN_LAUGH_ID)
+end
+
+local function stopEmote()
+    if CurrentTrack then
+        CurrentTrack:Stop(Settings["Fade Out"])
+        CurrentTrack = nil
+    end
+end
+
+-- ======================
+-- Configurações Áudio
+-- ======================
+local AUDIO_ID = 5813114232
+local TOOL_NAME = "Risada Goner"
+
+local function PlayServerAudio(ID)
+    if type(ID) ~= "number" then return end
+    local ev = ReplicatedStorage:FindFirstChild("RE")
+    if ev and ev:FindFirstChild("1Gu1nSound1s") then
+        ev["1Gu1nSound1s"]:FireServer(Workspace, ID, 1)
+    end
+end
+
+local function PlayLocalAudio(ID)
+    if type(ID) ~= "number" then return end
+    local char = player.Character or player.CharacterAdded:Wait()
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://" .. ID
+    sound.Volume = 1
+    sound.Parent = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("Head")
+    sound:Play()
+    sound.Ended:Connect(function()
+        sound:Destroy()
+    end)
+end
+
+local function PlayAudio(ID)
+    PlayServerAudio(ID)
+    PlayLocalAudio(ID)
+end
+
+-- ======================
+-- Criar Tool
+-- ======================
+local tool = Instance.new("Tool")
+tool.Name = TOOL_NAME
+tool.RequiresHandle = false
+tool.CanBeDropped = false
+tool.Parent = player.Backpack
+
+tool.Activated:Connect(function()
+    PlayAudio(AUDIO_ID)
+    playDemomanLaugh()
+end)
+
+tool.Equipped:Connect(function()
+    -- opcional: tocar automaticamente ao equipar
+    -- playDemomanLaugh()
+end)
+
+print("✅ Tool completa (Emote + Áudio) criada no Backpack!")
+
+game:GetService("StarterGui"):SetCore("SendNotification",{
+    Title = "Fe Sword Goner Carregado",
+    Text = "Made by Shad0ws - Sound System",
+    Button1 = "ok",
+    Button2 = "-",
+    Duration = 30
+})
+
+wait(1)
+
+-- Services
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+
+-- Variables
+local buggedPlayers = {}
+local bugConnections = {}
+local Remote = ReplicatedStorage.RE:FindFirstChild("1Gu1n")
+local currentAnimationTrack = nil
+local isAttacking = false
+local savedAppearance = nil
+local isEquipped = false
+local mouseConnection = nil
+
+-- ======================
+-- SISTEMA DE SOM + ANIMAÇÃO SINCRONIZADO
+-- ======================
+local ATTACK_SOUND_ID = 7249650897
+local ATTACK_ANIMATION_ID = "83509299779732"
+local SWORD_OUTFIT_ID = 12866137394
+
+-- Configurações de sincronização
+local Settings = {
+    ["Stop On Move"] = true,
+    ["Fade In"] = 0.1,
+    ["Fade Out"] = 0.1,
+    ["Weight"] = 1,
+    ["Speed"] = 2,
+    ["Time Position"] = 0
+}
+
+local function PlayServerAudio(ID)
+    if type(ID) ~= "number" then return end
+    local ev = ReplicatedStorage:FindFirstChild("RE")
+    if ev and ev:FindFirstChild("1Gu1nSound1s") then
+        ev["1Gu1nSound1s"]:FireServer(Workspace, ID, 1)
+    end
+end
+
+local function PlayLocalAudio(ID)
+    if type(ID) ~= "number" then return end
+    
+    local char = LocalPlayer.Character
+    if not char then return end
+    
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://" .. ID
+    sound.Volume = 1
+    sound.Parent = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("Head")
+    sound:Play()
+    
+    sound.Ended:Connect(function()
+        sound:Destroy()
+    end)
+    
+    task.delay(10, function()
+        if sound and sound.Parent then
+            sound:Destroy()
+        end
+    end)
+    
+    return sound
+end
+
+local function PlayAttackSound()
+    PlayServerAudio(ATTACK_SOUND_ID)
+    return PlayLocalAudio(ATTACK_SOUND_ID)
+end
+
+-- Sistema de detecção de movimento
+local lastPosition = Vector3.new()
+local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+
+LocalPlayer.CharacterAdded:Connect(function(newCharacter)
+    character = newCharacter
+    humanoid = newCharacter:WaitForChild("Humanoid")
+    if character.PrimaryPart then
+        lastPosition = character.PrimaryPart.Position
+    end
+    -- Resetar estados ao morrer/resetar
+    isEquipped = false
+    savedAppearance = nil
+    if mouseConnection then
+        mouseConnection:Disconnect()
+        mouseConnection = nil
+    end
+end)
+
+-- Parar animação ao se mover
+RunService.RenderStepped:Connect(function()
+    if character and character.PrimaryPart then
+        if Settings["Stop On Move"] and currentAnimationTrack and currentAnimationTrack.IsPlaying then
+            local moved = (character.PrimaryPart.Position - lastPosition).Magnitude > 0.1
+            local jumped = humanoid and humanoid:GetState() == Enum.HumanoidStateType.Jumping
+            
+            if moved or jumped then
+                currentAnimationTrack:Stop(Settings["Fade Out"])
+                currentAnimationTrack = nil
+                isAttacking = false
+            end
+        end
+        lastPosition = character.PrimaryPart.Position
+    end
+end)
+
+-- Função para carregar e tocar animação sincronizada
+local function LoadAndPlayAttackAnimation()
+    if not character or not character:FindFirstChild("Humanoid") then return end
+    
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+    
+    if currentAnimationTrack then
+        currentAnimationTrack:Stop(Settings["Fade Out"])
+        currentAnimationTrack = nil
+    end
+    
+    local newAnim = Instance.new("Animation")
+    newAnim.AnimationId = "rbxassetid://" .. ATTACK_ANIMATION_ID
+    
+    local newTrack = humanoid:LoadAnimation(newAnim)
+    newTrack.Priority = Enum.AnimationPriority.Action4
+    newTrack.Looped = false
+    
+    local weight = Settings["Weight"]
+    if weight == 0 then weight = 0.001 end
+    
+    newTrack:Play(Settings["Fade In"], weight, Settings["Speed"])
+    currentAnimationTrack = newTrack
+    currentAnimationTrack.TimePosition = math.clamp(Settings["Time Position"], 0, 1) * currentAnimationTrack.Length
+    
+    currentAnimationTrack.Stopped:Connect(function()
+        currentAnimationTrack = nil
+        isAttacking = false
+    end)
+    
+    task.delay(1.5, function()
+        if currentAnimationTrack == newTrack then
+            newTrack:Stop(Settings["Fade Out"])
+            currentAnimationTrack = nil
+            isAttacking = false
+        end
+    end)
+    
+    return newTrack
+end
+
+-- Função principal de ataque sincronizado
+local function PerformAttack()
+    if isAttacking then return end
+    
+    isAttacking = true
+    
+    PlayAttackSound()
+    LoadAndPlayAttackAnimation()
+    
+    task.delay(0.8, function()
+        isAttacking = false
+    end)
+end
+
+-- ======================
+-- TOOL SETUP
+-- ======================
+local tool = Instance.new("Tool")
+tool.Name = "Sword Goner"
+tool.RequiresHandle = true
+tool.CanBeDropped = true
+
+local handle = Instance.new("Part")
+handle.Name = "Handle"
+handle.Size = Vector3.new(0.1, 0.1, 0.1)
+handle.Massless = true
+handle.Anchored = false
+handle.CanCollide = false
+handle.Transparency = 0.5
+handle.Color = Color3.fromRGB(255, 0, 0)
+
+local mesh = Instance.new("SpecialMesh", handle)
+mesh.MeshType = Enum.MeshType.Sphere
+mesh.Scale = Vector3.new(0.05, 0.05, 0.05)
+mesh.Parent = handle
+
+handle.Parent = tool
+
+-- Função para criar notificação
+local function createNotification(title, message)
+    game:GetService("StarterGui"):SetCore("SendNotification",{
+        Title = title,
+        Text = message,
+        Duration = 3
+    })
+end
+
+-- Função para aplicar bug em um player específico
+local function bugPlayer(targetPlayer)
+    if not Remote then
+        createNotification("❌ Erro", "Remote não encontrado!")
+        return
+    end
+    
+    if not targetPlayer or not targetPlayer.Character then
+        createNotification("❌ Erro", "Player inválido!")
+        return
+    end
+    
+    local playerName = targetPlayer.Name
+    
+    if buggedPlayers[playerName] then
+        if bugConnections[playerName] then
+            bugConnections[playerName]:Disconnect()
+            bugConnections[playerName] = nil
+        end
+        buggedPlayers[playerName] = nil
+        createNotification("Bug Parado", playerName .. " foi desbugado!")
+        return
+    end
+    
+    buggedPlayers[playerName] = true
+    createNotification("Ataque!", playerName .. " foi atingido!")
+    
+    bugConnections[playerName] = RunService.Stepped:Connect(function()
+        local target = Players:FindFirstChild(playerName)
+        
+        if not target or not target.Character or not target.Character:FindFirstChild("HumanoidRootPart") then
+            if bugConnections[playerName] then
+                bugConnections[playerName]:Disconnect()
+                bugConnections[playerName] = nil
+            end
+            buggedPlayers[playerName] = nil
+            return
+        end
+        
+        local crazyVector = Vector3.new(
+            math.random(1e14, 1e15),
+            math.random(1e14, 1e15),
+            math.random(1e14, 1e15)
+        )
+        
+        local args = {
+            [1] = target.Character.HumanoidRootPart,
+            [2] = target.Character.HumanoidRootPart,
+            [3] = crazyVector,
+            [4] = target.Character.HumanoidRootPart.Position,
+            [5] = LocalPlayer.Backpack:FindFirstChild("Assault") and LocalPlayer.Backpack.Assault:FindFirstChild("GunScript_Local") and LocalPlayer.Backpack.Assault.GunScript_Local:FindFirstChild("MuzzleEffect"),
+            [6] = LocalPlayer.Backpack:FindFirstChild("Assault") and LocalPlayer.Backpack.Assault:FindFirstChild("GunScript_Local") and LocalPlayer.Backpack.Assault.GunScript_Local:FindFirstChild("HitEffect"),
+            [7] = 0,
+            [8] = 0,
+            [9] = { [1] = false },
+            [10] = {
+                [1] = 25,
+                [2] = Vector3.new(100, 100, 100),
+                [3] = BrickColor.new(29),
+                [4] = 0.25,
+                [5] = Enum.Material.SmoothPlastic,
+                [6] = 0.25
+            },
+            [11] = true,
+            [12] = false
+        }
+        
+        Remote:FireServer(unpack(args))
+    end)
+end
+
+-- Função para detectar clique em player
+local function getPlayerFromMouse(mouse)
+    local target = mouse.Target
+    if not target then return nil end
+    
+    local character = target.Parent
+    while character and not character:FindFirstChild("Humanoid") do
+        character = character.Parent
+    end
+    
+    if character and character:FindFirstChild("Humanoid") then
+        return Players:GetPlayerFromCharacter(character)
+    end
+    
+    return nil
+end
+
+-- Função para equipar aparência
+local function EquipSwordAppearance()
+    if isEquipped then return end
+    
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("Humanoid") then return end
+    
+    -- Salvar aparência original ANTES de mudar
+    local success = pcall(function()
+        savedAppearance = char.Humanoid:GetAppliedDescription()
+    end)
+    
+    if not success then
+        warn("Falha ao salvar aparência original")
+        return
+    end
+    
+    -- Aplicar aparência da espada
+    pcall(function()
+        local remotes = ReplicatedStorage:WaitForChild("Remotes", 2)
+        if remotes and remotes:FindFirstChild("Wear") then
+            remotes.Wear:InvokeServer(SWORD_OUTFIT_ID)
+            isEquipped = true
+            createNotification("⚔️ Transformação", "Modo Sword Goner ativado!")
+        end
+    end)
+end
+
+-- Função para desequipar aparência
+local function UnequipSwordAppearance()
+    if not isEquipped then return end
+    
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("Humanoid") then return end
+    
+    -- Restaurar aparência original
+    if savedAppearance then
+        local success = pcall(function()
+            char.Humanoid:ApplyDescription(savedAppearance)
+        end)
+        
+        if success then
+            isEquipped = false
+            savedAppearance = nil
+            createNotification("🗡️ Normal", "Aparência restaurada!")
+        else
+            warn("Falha ao restaurar aparência")
+        end
+    end
+end
+
+tool.Equipped:Connect(function(mouse)
+    character = tool.Parent
+    if character and character:FindFirstChild("Humanoid") and character.Humanoid.RigType == Enum.HumanoidRigType.R15 then
+        humanoid = character:FindFirstChild("Humanoid")
+        if character.PrimaryPart then
+            lastPosition = character.PrimaryPart.Position
+        end
+        
+        -- Equipar aparência da espada OTIMIZADO
+        task.wait(0.1) -- Pequeno delay para estabilizar
+        EquipSwordAppearance()
+        
+        -- Conectar clique do mouse (apenas uma vez)
+        if mouseConnection then
+            mouseConnection:Disconnect()
+        end
+        
+        mouseConnection = mouse.Button1Down:Connect(function()
+            PerformAttack()
+            
+            local targetPlayer = getPlayerFromMouse(mouse)
+            if targetPlayer and targetPlayer ~= LocalPlayer then
+                bugPlayer(targetPlayer)
+            end
+        end)
+    end
+end)
+
+tool.Unequipped:Connect(function()
+    -- Parar animação ao desequipar
+    if currentAnimationTrack then
+        currentAnimationTrack:Stop(Settings["Fade Out"])
+        currentAnimationTrack = nil
+    end
+    
+    isAttacking = false
+    
+    -- Desconectar mouse
+    if mouseConnection then
+        mouseConnection:Disconnect()
+        mouseConnection = nil
+    end
+    
+    -- Desequipar aparência da espada OTIMIZADO
+    task.wait(0.1) -- Pequeno delay para estabilizar
+    UnequipSwordAppearance()
+end)
+
+-- Limpeza automática quando players saem
+Players.PlayerRemoving:Connect(function(player)
+    local playerName = player.Name
+    if bugConnections[playerName] then
+        bugConnections[playerName]:Disconnect()
+        bugConnections[playerName] = nil
+    end
+    if buggedPlayers[playerName] then
+        buggedPlayers[playerName] = nil
+    end
+end)
+
+-- Comandos de chat
+local function stopAllBugs()
+    for playerName, connection in pairs(bugConnections) do
+        if connection then
+            connection:Disconnect()
+        end
+    end
+    bugConnections = {}
+    buggedPlayers = {}
+    createNotification("Bugs Parados", "Todos desbugados!")
+end
+
+LocalPlayer.Chatted:Connect(function(message)
+    local cmd = message:lower()
+    
+    if cmd == "/stopallbugs" then
+        stopAllBugs()
+        
+    elseif cmd == "/buggedlist" then
+        local count = 0
+        for _ in pairs(buggedPlayers) do
+            count = count + 1
+        end
+        if count > 0 then
+            createNotification("Lista", count .. " players bugados")
+        else
+            createNotification("Lista", "Nenhum player bugado")
+        end
+        
+    elseif cmd == "/stopanim" then
+        if currentAnimationTrack then
+            currentAnimationTrack:Stop(Settings["Fade Out"])
+            currentAnimationTrack = nil
+        end
+        isAttacking = false
+        createNotification("Parado", "Animação interrompida!")
+        
+    elseif cmd == "/resetappearance" then
+        -- Comando de emergência para forçar reset
+        UnequipSwordAppearance()
+        createNotification("Reset", "Aparência resetada manualmente!")
+    end
+end)
+
+tool.Parent = LocalPlayer.Backpack
+
+createNotification("Carregado!", "Sistema Goner")
+
+-- Serviços
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local lastPosition = character.PrimaryPart and character.PrimaryPart.Position or Vector3.new()
+
+player.CharacterAdded:Connect(function(newCharacter)
+    character = newCharacter
+    humanoid = newCharacter:WaitForChild("Humanoid")
+    lastPosition = character.PrimaryPart and character.PrimaryPart.Position or Vector3.new()
+end)
+
+-- ======================
+-- Configurações Emote
+-- ======================
+local Settings = {}
+Settings["Stop On Move"] = true
+Settings["Fade In"] = 0.1
+Settings["Fade Out"] = 0.1
+Settings["Weight"] = 1
+Settings["Speed"] = 1
+Settings["Time Position"] = 0
+
+local CurrentTrack = nil
+local DEMOMAN_LAUGH_ID = "120426139200972" -- ID atualizado do emote
+
+local function LoadTrack(id)
+    if CurrentTrack then 
+        CurrentTrack:Stop(Settings["Fade Out"]) 
+    end
+    
+    local animId
+    local ok, result = pcall(function() 
+        return game:GetObjects("rbxassetid://" .. tostring(id)) 
+    end)
+    
+    if ok and result and #result > 0 then
+        local anim = result[1]
+        if anim:IsA("Animation") then
+            animId = anim.AnimationId
+        else
+            animId = "rbxassetid://" .. tostring(id)
+        end
+    else
+        animId = "rbxassetid://" .. tostring(id)
+    end
+    
+    local newAnim = Instance.new("Animation")
+    newAnim.AnimationId = animId
+    local newTrack = humanoid:LoadAnimation(newAnim)
+    newTrack.Priority = Enum.AnimationPriority.Action4
+    
+    local weight = Settings["Weight"]
+    if weight == 0 then weight = 0.001 end
+    
+    newTrack:Play(Settings["Fade In"], weight, Settings["Speed"])
+    CurrentTrack = newTrack
+    CurrentTrack.TimePosition = math.clamp(Settings["Time Position"], 0, 1) * CurrentTrack.Length
+    CurrentTrack.Priority = Enum.AnimationPriority.Action4
+    
+    return newTrack
+end
+
+RunService.RenderStepped:Connect(function()
+    if character.PrimaryPart then
+        if Settings["Stop On Move"] and CurrentTrack and CurrentTrack.IsPlaying then
+            local moved = (character.PrimaryPart.Position - lastPosition).Magnitude > 0.1
+            local jumped = humanoid and humanoid:GetState() == Enum.HumanoidStateType.Jumping
+            if moved or jumped then
+                CurrentTrack:Stop(Settings["Fade Out"])
+                CurrentTrack = nil
+            end
+        end
+        lastPosition = character.PrimaryPart.Position
+    end
+end)
+
+local function playDemomanLaugh()
+    LoadTrack(DEMOMAN_LAUGH_ID)
+end
+
+local function stopEmote()
+    if CurrentTrack then
+        CurrentTrack:Stop(Settings["Fade Out"])
+        CurrentTrack = nil
+    end
+end
+
+-- ======================
+-- Configurações Áudio
+-- ======================
+local AUDIO_ID = 120426139200972
+local TOOL_NAME = "Goner Cagar"
+
+local function PlayServerAudio(ID)
+    if type(ID) ~= "number" then return end
+    local ev = ReplicatedStorage:FindFirstChild("RE")
+    if ev and ev:FindFirstChild("1Gu1nSound1s") then
+        ev["1Gu1nSound1s"]:FireServer(Workspace, ID, 1)
+    end
+end
+
+local function PlayLocalAudio(ID)
+    if type(ID) ~= "number" then return end
+    local char = player.Character or player.CharacterAdded:Wait()
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://" .. ID
+    sound.Volume = 1
+    sound.Parent = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("Head")
+    sound:Play()
+    sound.Ended:Connect(function()
+        sound:Destroy()
+    end)
+end
+
+local function PlayAudio(ID)
+    PlayServerAudio(ID)
+    PlayLocalAudio(ID)
+end
+
+-- ======================
+-- Criar Tool
+-- ======================
+local tool = Instance.new("Tool")
+tool.Name = TOOL_NAME
+tool.RequiresHandle = false
+tool.CanBeDropped = false
+tool.Parent = player.Backpack
+
+tool.Activated:Connect(function()
+    PlayAudio(AUDIO_ID)
+    playDemomanLaugh()
+end)
+
+tool.Equipped:Connect(function()
+    -- opcional: tocar automaticamente ao equipar
+    -- playDemomanLaugh()
+end)
+
+print("✅ Tool completa (Emote + Áudio) criada no Backpack!")
+
+-- Serviços
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local lastPosition = character.PrimaryPart and character.PrimaryPart.Position or Vector3.new()
+
+player.CharacterAdded:Connect(function(newCharacter)
+    character = newCharacter
+    humanoid = newCharacter:WaitForChild("Humanoid")
+    lastPosition = character.PrimaryPart and character.PrimaryPart.Position or Vector3.new()
+end)
+
+-- ======================
+-- Configurações Emote
+-- ======================
+local Settings = {}
+Settings["Stop On Move"] = true
+Settings["Fade In"] = 0.1
+Settings["Fade Out"] = 0.1
+Settings["Weight"] = 1
+Settings["Speed"] = 1
+Settings["Time Position"] = 0
+
+local CurrentTrack = nil
+local DEMOMAN_LAUGH_ID = "129780300658892" -- ID atualizado do emote
+
+local function LoadTrack(id)
+    if CurrentTrack then 
+        CurrentTrack:Stop(Settings["Fade Out"]) 
+    end
+    
+    local animId
+    local ok, result = pcall(function() 
+        return game:GetObjects("rbxassetid://" .. tostring(id)) 
+    end)
+    
+    if ok and result and #result > 0 then
+        local anim = result[1]
+        if anim:IsA("Animation") then
+            animId = anim.AnimationId
+        else
+            animId = "rbxassetid://" .. tostring(id)
+        end
+    else
+        animId = "rbxassetid://" .. tostring(id)
+    end
+    
+    local newAnim = Instance.new("Animation")
+    newAnim.AnimationId = animId
+    local newTrack = humanoid:LoadAnimation(newAnim)
+    newTrack.Priority = Enum.AnimationPriority.Action4
+    
+    local weight = Settings["Weight"]
+    if weight == 0 then weight = 0.001 end
+    
+    newTrack:Play(Settings["Fade In"], weight, Settings["Speed"])
+    CurrentTrack = newTrack
+    CurrentTrack.TimePosition = math.clamp(Settings["Time Position"], 0, 1) * CurrentTrack.Length
+    CurrentTrack.Priority = Enum.AnimationPriority.Action4
+    
+    return newTrack
+end
+
+RunService.RenderStepped:Connect(function()
+    if character.PrimaryPart then
+        if Settings["Stop On Move"] and CurrentTrack and CurrentTrack.IsPlaying then
+            local moved = (character.PrimaryPart.Position - lastPosition).Magnitude > 0.1
+            local jumped = humanoid and humanoid:GetState() == Enum.HumanoidStateType.Jumping
+            if moved or jumped then
+                CurrentTrack:Stop(Settings["Fade Out"])
+                CurrentTrack = nil
+            end
+        end
+        lastPosition = character.PrimaryPart.Position
+    end
+end)
+
+local function playDemomanLaugh()
+    LoadTrack(DEMOMAN_LAUGH_ID)
+end
+
+local function stopEmote()
+    if CurrentTrack then
+        CurrentTrack:Stop(Settings["Fade Out"])
+        CurrentTrack = nil
+    end
+end
+
+-- ======================
+-- Configurações Áudio
+-- ======================
+local AUDIO_ID = 129780300658892
+local TOOL_NAME = "Goner Dormir"
+
+local function PlayServerAudio(ID)
+    if type(ID) ~= "number" then return end
+    local ev = ReplicatedStorage:FindFirstChild("RE")
+    if ev and ev:FindFirstChild("1Gu1nSound1s") then
+        ev["1Gu1nSound1s"]:FireServer(Workspace, ID, 1)
+    end
+end
+
+local function PlayLocalAudio(ID)
+    if type(ID) ~= "number" then return end
+    local char = player.Character or player.CharacterAdded:Wait()
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://" .. ID
+    sound.Volume = 1
+    sound.Parent = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("Head")
+    sound:Play()
+    sound.Ended:Connect(function()
+        sound:Destroy()
+    end)
+end
+
+local function PlayAudio(ID)
+    PlayServerAudio(ID)
+    PlayLocalAudio(ID)
+end
+
+-- ======================
+-- Criar Tool
+-- ======================
+local tool = Instance.new("Tool")
+tool.Name = TOOL_NAME
+tool.RequiresHandle = false
+tool.CanBeDropped = false
+tool.Parent = player.Backpack
+
+tool.Activated:Connect(function()
+    PlayAudio(AUDIO_ID)
+    playDemomanLaugh()
+end)
+
+tool.Equipped:Connect(function()
+    -- opcional: tocar automaticamente ao equipar
+    -- playDemomanLaugh()
+end)
+
+print("✅ Tool completa (Emote + Áudio) criada no Backpack!")
+
+-- Serviços
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local lastPosition = character.PrimaryPart and character.PrimaryPart.Position or Vector3.new()
+
+player.CharacterAdded:Connect(function(newCharacter)
+    character = newCharacter
+    humanoid = newCharacter:WaitForChild("Humanoid")
+    lastPosition = character.PrimaryPart and character.PrimaryPart.Position or Vector3.new()
+end)
+
+-- ======================
+-- Configurações Emote
+-- ======================
+local Settings = {}
+Settings["Stop On Move"] = true
+Settings["Fade In"] = 0.1
+Settings["Fade Out"] = 0.1
+Settings["Weight"] = 1
+Settings["Speed"] = 1
+Settings["Time Position"] = 0
+
+local CurrentTrack = nil
+local DEMOMAN_LAUGH_ID = "133026238055112" -- ID atualizado do emote
+
+local function LoadTrack(id)
+    if CurrentTrack then 
+        CurrentTrack:Stop(Settings["Fade Out"]) 
+    end
+    
+    local animId
+    local ok, result = pcall(function() 
+        return game:GetObjects("rbxassetid://" .. tostring(id)) 
+    end)
+    
+    if ok and result and #result > 0 then
+        local anim = result[1]
+        if anim:IsA("Animation") then
+            animId = anim.AnimationId
+        else
+            animId = "rbxassetid://" .. tostring(id)
+        end
+    else
+        animId = "rbxassetid://" .. tostring(id)
+    end
+    
+    local newAnim = Instance.new("Animation")
+    newAnim.AnimationId = animId
+    local newTrack = humanoid:LoadAnimation(newAnim)
+    newTrack.Priority = Enum.AnimationPriority.Action4
+    
+    local weight = Settings["Weight"]
+    if weight == 0 then weight = 0.001 end
+    
+    newTrack:Play(Settings["Fade In"], weight, Settings["Speed"])
+    CurrentTrack = newTrack
+    CurrentTrack.TimePosition = math.clamp(Settings["Time Position"], 0, 1) * CurrentTrack.Length
+    CurrentTrack.Priority = Enum.AnimationPriority.Action4
+    
+    return newTrack
+end
+
+RunService.RenderStepped:Connect(function()
+    if character.PrimaryPart then
+        if Settings["Stop On Move"] and CurrentTrack and CurrentTrack.IsPlaying then
+            local moved = (character.PrimaryPart.Position - lastPosition).Magnitude > 0.1
+            local jumped = humanoid and humanoid:GetState() == Enum.HumanoidStateType.Jumping
+            if moved or jumped then
+                CurrentTrack:Stop(Settings["Fade Out"])
+                CurrentTrack = nil
+            end
+        end
+        lastPosition = character.PrimaryPart.Position
+    end
+end)
+
+local function playDemomanLaugh()
+    LoadTrack(DEMOMAN_LAUGH_ID)
+end
+
+local function stopEmote()
+    if CurrentTrack then
+        CurrentTrack:Stop(Settings["Fade Out"])
+        CurrentTrack = nil
+    end
+end
+
+-- ======================
+-- Configurações Áudio
+-- ======================
+local AUDIO_ID = 133026238055112
+local TOOL_NAME = "Goner Cansado"
+
+local function PlayServerAudio(ID)
+    if type(ID) ~= "number" then return end
+    local ev = ReplicatedStorage:FindFirstChild("RE")
+    if ev and ev:FindFirstChild("1Gu1nSound1s") then
+        ev["1Gu1nSound1s"]:FireServer(Workspace, ID, 1)
+    end
+end
+
+local function PlayLocalAudio(ID)
+    if type(ID) ~= "number" then return end
+    local char = player.Character or player.CharacterAdded:Wait()
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://" .. ID
+    sound.Volume = 1
+    sound.Parent = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("Head")
+    sound:Play()
+    sound.Ended:Connect(function()
+        sound:Destroy()
+    end)
+end
+
+local function PlayAudio(ID)
+    PlayServerAudio(ID)
+    PlayLocalAudio(ID)
+end
+
+-- ======================
+-- Criar Tool
+-- ======================
+local tool = Instance.new("Tool")
+tool.Name = TOOL_NAME
+tool.RequiresHandle = false
+tool.CanBeDropped = false
+tool.Parent = player.Backpack
+
+tool.Activated:Connect(function()
+    PlayAudio(AUDIO_ID)
+    playDemomanLaugh()
+end)
+
+tool.Equipped:Connect(function()
+    -- opcional: tocar automaticamente ao equipar
+    -- playDemomanLaugh()
+end)
+
+print("✅ Tool completa (Emote + Áudio) criada no Backpack!")
+
+-- Serviços
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local lastPosition = character.PrimaryPart and character.PrimaryPart.Position or Vector3.new()
+
+player.CharacterAdded:Connect(function(newCharacter)
+    character = newCharacter
+    humanoid = newCharacter:WaitForChild("Humanoid")
+    lastPosition = character.PrimaryPart and character.PrimaryPart.Position or Vector3.new()
+end)
+
+-- ======================
+-- Configurações Emote
+-- ======================
+local Settings = {}
+Settings["Stop On Move"] = true
+Settings["Fade In"] = 0.1
+Settings["Fade Out"] = 0.1
+Settings["Weight"] = 1
+Settings["Speed"] = 1
+Settings["Time Position"] = 0
+
+local CurrentTrack = nil
+local DEMOMAN_LAUGH_ID = "80688358107664" -- ID atualizado do emote
+
+local function LoadTrack(id)
+    if CurrentTrack then 
+        CurrentTrack:Stop(Settings["Fade Out"]) 
+    end
+    
+    local animId
+    local ok, result = pcall(function() 
+        return game:GetObjects("rbxassetid://" .. tostring(id)) 
+    end)
+    
+    if ok and result and #result > 0 then
+        local anim = result[1]
+        if anim:IsA("Animation") then
+            animId = anim.AnimationId
+        else
+            animId = "rbxassetid://" .. tostring(id)
+        end
+    else
+        animId = "rbxassetid://" .. tostring(id)
+    end
+    
+    local newAnim = Instance.new("Animation")
+    newAnim.AnimationId = animId
+    local newTrack = humanoid:LoadAnimation(newAnim)
+    newTrack.Priority = Enum.AnimationPriority.Action4
+    
+    local weight = Settings["Weight"]
+    if weight == 0 then weight = 0.001 end
+    
+    newTrack:Play(Settings["Fade In"], weight, Settings["Speed"])
+    CurrentTrack = newTrack
+    CurrentTrack.TimePosition = math.clamp(Settings["Time Position"], 0, 1) * CurrentTrack.Length
+    CurrentTrack.Priority = Enum.AnimationPriority.Action4
+    
+    return newTrack
+end
+
+RunService.RenderStepped:Connect(function()
+    if character.PrimaryPart then
+        if Settings["Stop On Move"] and CurrentTrack and CurrentTrack.IsPlaying then
+            local moved = (character.PrimaryPart.Position - lastPosition).Magnitude > 0.1
+            local jumped = humanoid and humanoid:GetState() == Enum.HumanoidStateType.Jumping
+            if moved or jumped then
+                CurrentTrack:Stop(Settings["Fade Out"])
+                CurrentTrack = nil
+            end
+        end
+        lastPosition = character.PrimaryPart.Position
+    end
+end)
+
+local function playDemomanLaugh()
+    LoadTrack(DEMOMAN_LAUGH_ID)
+end
+
+local function stopEmote()
+    if CurrentTrack then
+        CurrentTrack:Stop(Settings["Fade Out"])
+        CurrentTrack = nil
+    end
+end
+
+-- ======================
+-- Configurações Áudio
+-- ======================
+local AUDIO_ID = 80688358107664
+local TOOL_NAME = "Goner Feliz KKKKKKKKK"
+
+local function PlayServerAudio(ID)
+    if type(ID) ~= "number" then return end
+    local ev = ReplicatedStorage:FindFirstChild("RE")
+    if ev and ev:FindFirstChild("1Gu1nSound1s") then
+        ev["1Gu1nSound1s"]:FireServer(Workspace, ID, 1)
+    end
+end
+
+local function PlayLocalAudio(ID)
+    if type(ID) ~= "number" then return end
+    local char = player.Character or player.CharacterAdded:Wait()
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://" .. ID
+    sound.Volume = 1
+    sound.Parent = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("Head")
+    sound:Play()
+    sound.Ended:Connect(function()
+        sound:Destroy()
+    end)
+end
+
+local function PlayAudio(ID)
+    PlayServerAudio(ID)
+    PlayLocalAudio(ID)
+end
+
+-- ======================
+-- Criar Tool
+-- ======================
+local tool = Instance.new("Tool")
+tool.Name = TOOL_NAME
+tool.RequiresHandle = false
+tool.CanBeDropped = false
+tool.Parent = player.Backpack
+
+tool.Activated:Connect(function()
+    PlayAudio(AUDIO_ID)
+    playDemomanLaugh()
+end)
+
+tool.Equipped:Connect(function()
+    -- opcional: tocar automaticamente ao equipar
+    -- playDemomanLaugh()
+end)
+
+print("✅ Tool completa (Emote + Áudio) criada no Backpack!")
+
+-- Serviços
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local lastPosition = character.PrimaryPart and character.PrimaryPart.Position or Vector3.new()
+
+player.CharacterAdded:Connect(function(newCharacter)
+    character = newCharacter
+    humanoid = newCharacter:WaitForChild("Humanoid")
+    lastPosition = character.PrimaryPart and character.PrimaryPart.Position or Vector3.new()
+end)
+
+-- ======================
+-- Configurações Emote
+-- ======================
+local Settings = {}
+Settings["Stop On Move"] = true
+Settings["Fade In"] = 0.1
+Settings["Fade Out"] = 0.1
+Settings["Weight"] = 1
+Settings["Speed"] = 1
+Settings["Time Position"] = 0
+
+local CurrentTrack = nil
+local DEMOMAN_LAUGH_ID = "113578589119917" -- ID atualizado do emote
+
+local function LoadTrack(id)
+    if CurrentTrack then 
+        CurrentTrack:Stop(Settings["Fade Out"]) 
+    end
+    
+    local animId
+    local ok, result = pcall(function() 
+        return game:GetObjects("rbxassetid://" .. tostring(id)) 
+    end)
+    
+    if ok and result and #result > 0 then
+        local anim = result[1]
+        if anim:IsA("Animation") then
+            animId = anim.AnimationId
+        else
+            animId = "rbxassetid://" .. tostring(id)
+        end
+    else
+        animId = "rbxassetid://" .. tostring(id)
+    end
+    
+    local newAnim = Instance.new("Animation")
+    newAnim.AnimationId = animId
+    local newTrack = humanoid:LoadAnimation(newAnim)
+    newTrack.Priority = Enum.AnimationPriority.Action4
+    
+    local weight = Settings["Weight"]
+    if weight == 0 then weight = 0.001 end
+    
+    newTrack:Play(Settings["Fade In"], weight, Settings["Speed"])
+    CurrentTrack = newTrack
+    CurrentTrack.TimePosition = math.clamp(Settings["Time Position"], 0, 1) * CurrentTrack.Length
+    CurrentTrack.Priority = Enum.AnimationPriority.Action4
+    
+    return newTrack
+end
+
+RunService.RenderStepped:Connect(function()
+    if character.PrimaryPart then
+        if Settings["Stop On Move"] and CurrentTrack and CurrentTrack.IsPlaying then
+            local moved = (character.PrimaryPart.Position - lastPosition).Magnitude > 0.1
+            local jumped = humanoid and humanoid:GetState() == Enum.HumanoidStateType.Jumping
+            if moved or jumped then
+                CurrentTrack:Stop(Settings["Fade Out"])
+                CurrentTrack = nil
+            end
+        end
+        lastPosition = character.PrimaryPart.Position
+    end
+end)
+
+local function playDemomanLaugh()
+    LoadTrack(DEMOMAN_LAUGH_ID)
+end
+
+local function stopEmote()
+    if CurrentTrack then
+        CurrentTrack:Stop(Settings["Fade Out"])
+        CurrentTrack = nil
+    end
+end
+
+-- ======================
+-- Configurações Áudio
+-- ======================
+local AUDIO_ID = 113578589119917
+local TOOL_NAME = "Goner Sit KKKKKKKKKKK"
+
+local function PlayServerAudio(ID)
+    if type(ID) ~= "number" then return end
+    local ev = ReplicatedStorage:FindFirstChild("RE")
+    if ev and ev:FindFirstChild("1Gu1nSound1s") then
+        ev["1Gu1nSound1s"]:FireServer(Workspace, ID, 1)
+    end
+end
+
+local function PlayLocalAudio(ID)
+    if type(ID) ~= "number" then return end
+    local char = player.Character or player.CharacterAdded:Wait()
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://" .. ID
+    sound.Volume = 1
+    sound.Parent = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("Head")
+    sound:Play()
+    sound.Ended:Connect(function()
+        sound:Destroy()
+    end)
+end
+
+local function PlayAudio(ID)
+    PlayServerAudio(ID)
+    PlayLocalAudio(ID)
+end
+
+-- ======================
+-- Criar Tool
+-- ======================
+local tool = Instance.new("Tool")
+tool.Name = TOOL_NAME
+tool.RequiresHandle = false
+tool.CanBeDropped = false
+tool.Parent = player.Backpack
+
+tool.Activated:Connect(function()
+    PlayAudio(AUDIO_ID)
+    playDemomanLaugh()
+end)
+
+tool.Equipped:Connect(function()
+    -- opcional: tocar automaticamente ao equipar
+    -- playDemomanLaugh()
+end)
+
+print("✅ Tool completa (Emote + Áudio) criada no Backpack!")
