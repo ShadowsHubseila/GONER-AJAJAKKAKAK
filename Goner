@@ -1,0 +1,749 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local GlobalState = {
+    isSystemActive = false,
+    CurrentTracks = {},
+    lastState = "idle",
+    stateTime = 0,
+    heartbeatConnection = nil,
+    lastPosition = Vector3.new()
+}
+
+local EmoteIDs = {
+    idle = "112337030269214",
+    walk = "12518152696",
+    run = "12518152696",
+    jump = "507765000"
+}
+
+local Settings = {
+    ["Stop On Move"] = false,
+    ["Fade In"] = 0.2,
+    ["Fade Out"] = 0.2,
+    ["Weight"] = 1,
+    ["Speed"] = 1,
+    ["Time Position"] = 0
+}
+
+local function notify(title, message, duration)
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = title,
+        Text = message,
+        Duration = duration or 3
+    })
+end
+
+local function equipGonerVisual()
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("🔥 EQUIPANDO VISUAL GONER")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    
+    local gonerIDs = {
+        17770317484, 17812417356, 17812415139, 17772174303,
+        17822722698, 17822749561, 17771175724, 81713181781035
+    }
+    
+    local function equipItem(id)
+        pcall(function()
+            ReplicatedStorage.Remotes.Wear:InvokeServer(id)
+        end)
+    end
+    
+    pcall(function()
+        for _, child in pairs(character:GetChildren()) do
+            if child:IsA("Accessory") then
+                child:Destroy()
+            end
+        end
+    end)
+    
+    wait(0.5)
+    
+    for i, itemID in pairs(gonerIDs) do
+        print("📦 Equipando " .. i .. "/8: " .. itemID)
+        equipItem(itemID)
+        wait(0.5)
+    end
+    
+    pcall(function()
+        ReplicatedStorage.Remotes.ChangeBodyColor:FireServer("Really black")
+    end)
+    
+    wait(0.3)
+    
+    pcall(function()
+        ReplicatedStorage.Remotes.ChangeCharacterBody:InvokeServer({0,0,0,0,0,0})
+    end)
+    
+    wait(0.3)
+    
+    pcall(function()
+        ReplicatedStorage.Remotes.Wear:InvokeServer(5319922112)
+    end)
+    
+    wait(0.3)
+    
+    pcall(function()
+        ReplicatedStorage.Remotes.ApplyEmmiter:InvokeServer("18637072603", "035FireBlack")
+    end)
+    
+    print("✅ Visual Goner equipado!")
+    notify("✅ Visual Completo", "Goner equipado com sucesso!", 3)
+end
+
+local function LoadEmoteTrack(id, trackName)
+    if GlobalState.CurrentTracks[trackName] then 
+        GlobalState.CurrentTracks[trackName]:Stop(Settings["Fade Out"]) 
+        GlobalState.CurrentTracks[trackName] = nil
+    end
+    
+    local animId
+    local ok, result = pcall(function() 
+        return game:GetObjects("rbxassetid://" .. tostring(id)) 
+    end)
+    
+    if ok and result and #result > 0 then
+        local anim = result[1]
+        animId = anim:IsA("Animation") and anim.AnimationId or ("rbxassetid://" .. tostring(id))
+    else
+        animId = "rbxassetid://" .. tostring(id)
+    end
+    
+    local newAnim = Instance.new("Animation")
+    newAnim.AnimationId = animId
+    newAnim.Name = "EmoteMovement_" .. trackName
+    
+    local newTrack = humanoid:LoadAnimation(newAnim)
+    newTrack.Priority = Enum.AnimationPriority.Action4
+    
+    local weight = Settings["Weight"]
+    if weight == 0 then weight = 0.001 end
+    
+    newTrack:Play(Settings["Fade In"], weight, Settings["Speed"])
+    newTrack.TimePosition = math.clamp(Settings["Time Position"], 0, 1) * newTrack.Length
+    newTrack.Looped = (trackName ~= "jump")
+    
+    GlobalState.CurrentTracks[trackName] = newTrack
+    return newTrack
+end
+
+local function detectMovementState()
+    if not humanoid then return "idle" end
+    
+    local moveDirection = humanoid.MoveDirection
+    local walkSpeed = humanoid.WalkSpeed
+    local jumpState = humanoid:GetState()
+    
+    if jumpState == Enum.HumanoidStateType.Jumping or 
+       jumpState == Enum.HumanoidStateType.Freefall then
+        return "jump"
+    elseif moveDirection.Magnitude > 0.1 then
+        return walkSpeed >= 20 and "run" or "walk"
+    else
+        return "idle"
+    end
+end
+
+local function updateEmoteMovement()
+    if not GlobalState.isSystemActive then return end
+    
+    local currentTime = tick()
+    local newState = detectMovementState()
+    
+    if newState ~= GlobalState.lastState and (currentTime - GlobalState.stateTime) > 0.3 then
+        if GlobalState.CurrentTracks[GlobalState.lastState] and GlobalState.CurrentTracks[GlobalState.lastState].IsPlaying then
+            GlobalState.CurrentTracks[GlobalState.lastState]:Stop(Settings["Fade Out"])
+        end
+        
+        if EmoteIDs[newState] then
+            LoadEmoteTrack(EmoteIDs[newState], newState)
+        end
+        
+        GlobalState.lastState = newState
+        GlobalState.stateTime = currentTime
+    end
+end
+
+local function startCustomTrackSystem()
+    print("🔄 Iniciando sistema de tracks customizado...")
+    
+    for _, track in pairs(humanoid:GetPlayingAnimationTracks()) do
+        track:Stop(0.3)
+    end
+    
+    wait(0.5)
+    
+    LoadEmoteTrack(EmoteIDs.idle, "idle")
+    GlobalState.isSystemActive = true
+    
+    print("✅ Sistema de tracks customizado ativo!")
+    return true
+end
+
+local function replaceAnimateScript()
+    print("🔄 Tentando substituir Animate Script...")
+    
+    local success = false
+    
+    pcall(function()
+        local animate = character:FindFirstChild("Animate")
+        if animate then
+            animate.Disabled = true
+            
+            for _, track in pairs(humanoid:GetPlayingAnimationTracks()) do
+                track:Stop(0.3)
+            end
+            
+            wait(0.5)
+            
+            if animate:FindFirstChild("idle") and animate.idle:FindFirstChild("Animation1") then
+                animate.idle.Animation1.AnimationId = "rbxassetid://" .. EmoteIDs.idle
+            end
+            if animate:FindFirstChild("walk") and animate.walk:FindFirstChild("WalkAnim") then
+                animate.walk.WalkAnim.AnimationId = "rbxassetid://" .. EmoteIDs.walk
+            end
+            if animate:FindFirstChild("run") and animate.run:FindFirstChild("RunAnim") then
+                animate.run.RunAnim.AnimationId = "rbxassetid://" .. EmoteIDs.run
+            end
+            if animate:FindFirstChild("jump") and animate.jump:FindFirstChild("JumpAnim") then
+                animate.jump.JumpAnim.AnimationId = "rbxassetid://" .. EmoteIDs.jump
+            end
+            
+            animate.Disabled = false
+            success = true
+            print("✅ Animate Script substituído!")
+        end
+    end)
+    
+    return success
+end
+
+local function tryRemoteMethod()
+    print("🔄 Tentando método via Remotes...")
+    
+    local success = false
+    local remoteNames = {"Emote", "PlayEmote", "Animation", "SetAnimation"}
+    
+    for _, remoteName in ipairs(remoteNames) do
+        local remote = ReplicatedStorage:FindFirstChild(remoteName)
+        if remote then
+            for state, id in pairs(EmoteIDs) do
+                pcall(function()
+                    if remote:IsA("RemoteFunction") then
+                        remote:InvokeServer(tonumber(id))
+                    elseif remote:IsA("RemoteEvent") then
+                        remote:FireServer(tonumber(id))
+                    end
+                    success = true
+                end)
+                wait(0.2)
+            end
+        end
+    end
+    
+    return success
+end
+
+local function activateEmoteMovementSystem()
+    print("🎭 Ativando Sistema de Emotes como Movimento...")
+    print("📋 Emotes configurados:")
+    print("   🌊 Parado (Floating): " .. EmoteIDs.idle)
+    print("   ⚡ Andando (Divino): " .. EmoteIDs.walk)
+    print("   ⚡ Correndo (Divino): " .. EmoteIDs.run)
+    print("   🚀 Pulando (Fly Jump): " .. EmoteIDs.jump)
+    
+    local methods = {
+        {name = "Animate Script", func = replaceAnimateScript},
+        {name = "Sistema Custom", func = startCustomTrackSystem},
+        {name = "Remotes", func = tryRemoteMethod}
+    }
+    
+    local successCount = 0
+    
+    for i, method in ipairs(methods) do
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("🎯 Tentando método " .. i .. ": " .. method.name)
+        
+        local success = method.func()
+        if success then
+            successCount = successCount + 1
+            print("✅ " .. method.name .. " funcionou!")
+        else
+            print("❌ " .. method.name .. " falhou")
+        end
+        
+        wait(1)
+    end
+    
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    if successCount > 0 then
+        print("🎉 Sistema ativado com sucesso!")
+        print("🎬 Emotes serão executados baseados no movimento")
+        notify("🎭 Sistema Ativo", "Emotes de movimento ativados!", 2)
+        return true
+    else
+        print("💀 Nenhum método funcionou, tentando sistema backup...")
+        return startCustomTrackSystem()
+    end
+end
+
+local EmoteTools = {
+    {name = "Risada Goner", audio = 5813114232, anim = "122240620529815"},
+    {name = "Goner Cagar", audio = 120426139200972, anim = "120426139200972"},
+    {name = "Goner Dormir", audio = 129780300658892, anim = "129780300658892"},
+    {name = "Goner Cansado", audio = 133026238055112, anim = "133026238055112"},
+    {name = "Goner Feliz", audio = 80688358107664, anim = "80688358107664"},
+    {name = "Goner Sit", audio = 113578589119917, anim = "113578589119917"}
+}
+
+local function PlayServerAudio(ID)
+    if type(ID) ~= "number" then return end
+    pcall(function()
+        local ev = ReplicatedStorage:FindFirstChild("RE")
+        if ev and ev:FindFirstChild("1Gu1nSound1s") then
+            ev["1Gu1nSound1s"]:FireServer(Workspace, ID, 1)
+        end
+    end)
+end
+
+local function PlayLocalAudio(ID)
+    if type(ID) ~= "number" then return end
+    pcall(function()
+        local sound = Instance.new("Sound")
+        sound.SoundId = "rbxassetid://" .. ID
+        sound.Volume = 1
+        sound.Parent = character:FindFirstChild("HumanoidRootPart") or character:WaitForChild("Head")
+        sound:Play()
+        sound.Ended:Connect(function() sound:Destroy() end)
+    end)
+end
+
+local function createEmoteTool(toolData)
+    local tool = Instance.new("Tool")
+    tool.Name = toolData.name
+    tool.RequiresHandle = false
+    tool.CanBeDropped = false
+    
+    local toolSettings = {
+        ["Stop On Move"] = true,
+        ["Fade In"] = 0.1,
+        ["Fade Out"] = 0.1,
+        ["Weight"] = 1,
+        ["Speed"] = 1,
+        ["Time Position"] = 0
+    }
+    
+    local toolCurrentTrack = nil
+    local toolLastPosition = Vector3.new()
+    
+    local function LoadToolTrack(id)
+        if toolCurrentTrack then 
+            toolCurrentTrack:Stop(toolSettings["Fade Out"]) 
+        end
+        
+        local animId
+        local ok, result = pcall(function() 
+            return game:GetObjects("rbxassetid://" .. tostring(id)) 
+        end)
+        
+        if ok and result and #result > 0 then
+            local anim = result[1]
+            if anim:IsA("Animation") then
+                animId = anim.AnimationId
+            else
+                animId = "rbxassetid://" .. tostring(id)
+            end
+        else
+            animId = "rbxassetid://" .. tostring(id)
+        end
+        
+        local newAnim = Instance.new("Animation")
+        newAnim.AnimationId = animId
+        local newTrack = humanoid:LoadAnimation(newAnim)
+        newTrack.Priority = Enum.AnimationPriority.Action4
+        
+        local weight = toolSettings["Weight"]
+        if weight == 0 then weight = 0.001 end
+        
+        newTrack:Play(toolSettings["Fade In"], weight, toolSettings["Speed"])
+        toolCurrentTrack = newTrack
+        toolCurrentTrack.TimePosition = math.clamp(toolSettings["Time Position"], 0, 1) * toolCurrentTrack.Length
+        
+        return newTrack
+    end
+    
+    local renderConnection
+    renderConnection = RunService.RenderStepped:Connect(function()
+        if character and character.PrimaryPart then
+            if toolSettings["Stop On Move"] and toolCurrentTrack and toolCurrentTrack.IsPlaying then
+                local moved = (character.PrimaryPart.Position - toolLastPosition).Magnitude > 0.1
+                local jumped = humanoid and humanoid:GetState() == Enum.HumanoidStateType.Jumping
+                if moved or jumped then
+                    toolCurrentTrack:Stop(toolSettings["Fade Out"])
+                    toolCurrentTrack = nil
+                end
+            end
+            toolLastPosition = character.PrimaryPart.Position
+        end
+    end)
+    
+    tool.Activated:Connect(function()
+        PlayServerAudio(toolData.audio)
+        PlayLocalAudio(toolData.audio)
+        LoadToolTrack(toolData.anim)
+    end)
+    
+    return tool
+end
+
+local function createAllEmoteTools()
+    for _, toolData in pairs(EmoteTools) do
+        local tool = createEmoteTool(toolData)
+        tool.Parent = player.Backpack
+    end
+    print("✅ " .. #EmoteTools .. " tools de emote criadas!")
+end
+
+local function createSwordGoner()
+    local buggedPlayers = {}
+    local bugConnections = {}
+    local Remote = ReplicatedStorage.RE:FindFirstChild("1Gu1n")
+    local currentAnimationTrack = nil
+    local isAttacking = false
+    local savedAppearance = nil
+    local isEquipped = false
+    local mouseConnection = nil
+    
+    local ATTACK_SOUND_ID = 7249650897
+    local ATTACK_ANIMATION_ID = "83509299779732"
+    local SWORD_OUTFIT_ID = 12866137394
+    
+    local function PlayAttackSound()
+        PlayServerAudio(ATTACK_SOUND_ID)
+        PlayLocalAudio(ATTACK_SOUND_ID)
+    end
+    
+    local function LoadAndPlayAttackAnimation()
+        if not character or not humanoid then return end
+        
+        if currentAnimationTrack then
+            currentAnimationTrack:Stop(0.1)
+            currentAnimationTrack = nil
+        end
+        
+        local anim = Instance.new("Animation")
+        anim.AnimationId = "rbxassetid://" .. ATTACK_ANIMATION_ID
+        
+        local track = humanoid:LoadAnimation(anim)
+        track.Priority = Enum.AnimationPriority.Action4
+        track.Looped = false
+        track:Play(0.1, 1, 2)
+        
+        currentAnimationTrack = track
+        
+        track.Stopped:Connect(function()
+            currentAnimationTrack = nil
+            isAttacking = false
+        end)
+        
+        task.delay(1.5, function()
+            if currentAnimationTrack == track then
+                track:Stop(0.1)
+                currentAnimationTrack = nil
+                isAttacking = false
+            end
+        end)
+        
+        return track
+    end
+    
+    local function PerformAttack()
+        if isAttacking then return end
+        isAttacking = true
+        PlayAttackSound()
+        LoadAndPlayAttackAnimation()
+        task.delay(0.8, function() isAttacking = false end)
+    end
+    
+    local function bugPlayer(targetPlayer)
+        if not Remote or not targetPlayer or not targetPlayer.Character then return end
+        
+        local playerName = targetPlayer.Name
+        
+        if buggedPlayers[playerName] then
+            if bugConnections[playerName] then
+                bugConnections[playerName]:Disconnect()
+                bugConnections[playerName] = nil
+            end
+            buggedPlayers[playerName] = nil
+            notify("Bug Parado", playerName .. " desbugado!")
+            return
+        end
+        
+        buggedPlayers[playerName] = true
+        notify("Ataque!", playerName .. " atingido!")
+        
+        bugConnections[playerName] = RunService.Stepped:Connect(function()
+            local target = Players:FindFirstChild(playerName)
+            if not target or not target.Character or not target.Character:FindFirstChild("HumanoidRootPart") then
+                if bugConnections[playerName] then
+                    bugConnections[playerName]:Disconnect()
+                    bugConnections[playerName] = nil
+                end
+                buggedPlayers[playerName] = nil
+                return
+            end
+            
+            local crazyVector = Vector3.new(
+                math.random(1e14, 1e15),
+                math.random(1e14, 1e15),
+                math.random(1e14, 1e15)
+            )
+            
+            pcall(function()
+                Remote:FireServer(
+                    target.Character.HumanoidRootPart,
+                    target.Character.HumanoidRootPart,
+                    crazyVector,
+                    target.Character.HumanoidRootPart.Position,
+                    nil, nil, 0, 0, {false},
+                    {25, Vector3.new(100,100,100), BrickColor.new(29), 0.25, Enum.Material.SmoothPlastic, 0.25},
+                    true, false
+                )
+            end)
+        end)
+    end
+    
+    local function getPlayerFromMouse(mouse)
+        local target = mouse.Target
+        if not target then return nil end
+        
+        local char = target.Parent
+        while char and not char:FindFirstChild("Humanoid") do
+            char = char.Parent
+        end
+        
+        if char and char:FindFirstChild("Humanoid") then
+            return Players:GetPlayerFromCharacter(char)
+        end
+        return nil
+    end
+    
+    local function EquipSwordAppearance()
+        if isEquipped then return end
+        pcall(function()
+            savedAppearance = character.Humanoid:GetAppliedDescription()
+            ReplicatedStorage:WaitForChild("Remotes", 2).Wear:InvokeServer(SWORD_OUTFIT_ID)
+            isEquipped = true
+            notify("⚔️ Transformação", "Sword Goner ativado!")
+        end)
+    end
+    
+    local function UnequipSwordAppearance()
+        if not isEquipped or not savedAppearance then return end
+        pcall(function()
+            character.Humanoid:ApplyDescription(savedAppearance)
+            isEquipped = false
+            savedAppearance = nil
+            notify("🗡️ Normal", "Aparência restaurada!")
+        end)
+    end
+    
+    local tool = Instance.new("Tool")
+    tool.Name = "Sword Goner"
+    tool.RequiresHandle = true
+    tool.CanBeDropped = true
+    
+    local handle = Instance.new("Part")
+    handle.Name = "Handle"
+    handle.Size = Vector3.new(0.1, 0.1, 0.1)
+    handle.Massless = true
+    handle.Anchored = false
+    handle.CanCollide = false
+    handle.Transparency = 0.5
+    handle.Color = Color3.fromRGB(255, 0, 0)
+    handle.Parent = tool
+    
+    local mesh = Instance.new("SpecialMesh", handle)
+    mesh.MeshType = Enum.MeshType.Sphere
+    mesh.Scale = Vector3.new(0.05, 0.05, 0.05)
+    
+    tool.Equipped:Connect(function(mouse)
+        task.wait(0.1)
+        EquipSwordAppearance()
+        
+        if mouseConnection then mouseConnection:Disconnect() end
+        
+        mouseConnection = mouse.Button1Down:Connect(function()
+            PerformAttack()
+            local targetPlayer = getPlayerFromMouse(mouse)
+            if targetPlayer and targetPlayer ~= player then
+                bugPlayer(targetPlayer)
+            end
+        end)
+    end)
+    
+    tool.Unequipped:Connect(function()
+        if currentAnimationTrack then
+            currentAnimationTrack:Stop(0.1)
+            currentAnimationTrack = nil
+        end
+        isAttacking = false
+        if mouseConnection then
+            mouseConnection:Disconnect()
+            mouseConnection = nil
+        end
+        task.wait(0.1)
+        UnequipSwordAppearance()
+    end)
+    
+    tool.Parent = player.Backpack
+    print("✅ Sword Goner criada!")
+end
+
+local function stopMovementAnimations()
+    for trackName, track in pairs(GlobalState.CurrentTracks) do
+        if track and track.IsPlaying then
+            pcall(function() track:Stop(0.2) end)
+        end
+    end
+    GlobalState.CurrentTracks = {}
+end
+
+local function pauseSystem()
+    print("🛑 PAUSANDO SISTEMA DE MOVIMENTO")
+    GlobalState.isSystemActive = false
+    stopMovementAnimations()
+    
+    if GlobalState.heartbeatConnection then
+        GlobalState.heartbeatConnection:Disconnect()
+        GlobalState.heartbeatConnection = nil
+    end
+    
+    GlobalState.lastState = "idle"
+    notify("🛑 Sistema Pausado", "Movimento automático desativado", 2)
+end
+
+local function resumeSystem()
+    print("▶️ REATIVANDO SISTEMA DE MOVIMENTO")
+    GlobalState.isSystemActive = true
+    GlobalState.lastState = ""
+    
+    if not GlobalState.heartbeatConnection then
+        GlobalState.heartbeatConnection = RunService.Heartbeat:Connect(updateEmoteMovement)
+    end
+    
+    notify("▶️ Sistema Ativo", "Movimento automático reativado", 2)
+end
+
+local function toggleSystem()
+    if GlobalState.isSystemActive then
+        pauseSystem()
+    else
+        resumeSystem()
+    end
+end
+
+local function createToggleTool()
+    local tool = Instance.new("Tool")
+    tool.Name = " Movement Toggle"
+    tool.RequiresHandle = false
+    tool.CanBeDropped = false
+    
+    tool.Activated:Connect(toggleSystem)
+    
+    tool.Parent = player.Backpack
+    print("✅ Movement Toggle Tool criada!")
+end
+
+local function initialize()
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("🎮 INICIALIZANDO SISTEMA COMPLETO GONER")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    
+    equipGonerVisual()
+    wait(2)
+    
+    createAllEmoteTools()
+    wait(0.5)
+    
+    createSwordGoner()
+    wait(0.5)
+    
+    createToggleTool()
+    wait(0.5)
+    
+    activateEmoteMovementSystem()
+    GlobalState.heartbeatConnection = RunService.Heartbeat:Connect(updateEmoteMovement)
+    
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("✅ SISTEMA COMPLETO CARREGADO!")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("📦 Visual Goner: ✅")
+    print("🎭 Sistema de Movimento: ✅")
+    print("🔧 Tools de Emote Manual: ✅")
+    print("⚔️ Sword Goner: ✅")
+    print("🎮 Movement Toggle: ✅")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    
+    notify("🎉 Sistema Completo", "Tudo carregado! Toggle só afeta movimento.", 5)
+end
+
+player.Chatted:Connect(function(message)
+    local cmd = message:lower()
+    
+    if cmd == "/toggle" or cmd == "/pausar" then
+        toggleSystem()
+    elseif cmd == "/stop" or cmd == "/parar" then
+        if GlobalState.isSystemActive then pauseSystem() end
+    elseif cmd == "/start" or cmd == "/ativar" then
+        if not GlobalState.isSystemActive then resumeSystem() end
+    elseif cmd == "/status" then
+        local status = GlobalState.isSystemActive and "ATIVO ✅" or "PAUSADO 🛑"
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("📊 STATUS DO SISTEMA")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("🎭 Estado: " .. status)
+        print("📝 Tracks ativos: " .. tostring(#GlobalState.CurrentTracks))
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    elseif cmd == "/help" then
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("🎮 COMANDOS DISPONÍVEIS")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("🎭 Movement Toggle - Pausa/ativa movimento automático")
+        print("⚔️ Sword Goner - Espada com bugs")
+        print("🎵 6 Tools de Emotes - Funcionam sempre")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("💬 Comandos de Chat:")
+        print("   /toggle - Alternar movimento automático")
+        print("   /stop - Pausar movimento automático")
+        print("   /start - Ativar movimento automático")
+        print("   /status - Ver status")
+        print("   /help - Mostrar ajuda")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    end
+end)
+
+player.CharacterAdded:Connect(function(newCharacter)
+    character = newCharacter
+    humanoid = newCharacter:WaitForChild("Humanoid")
+    
+    if character.PrimaryPart then
+        GlobalState.lastPosition = character.PrimaryPart.Position
+    end
+    
+    wait(3)
+    
+    print("🔄 Reaplicando sistema após respawn...")
+    initialize()
+end)
+
+wait(1)
+initialize()
